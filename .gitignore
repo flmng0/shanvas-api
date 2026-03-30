@@ -1,2 +1,3 @@
 canvas.bin
 tmp/
+.env.local

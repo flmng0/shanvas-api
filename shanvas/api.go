@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 )
 
 type paintEvent struct {
@@ -26,10 +28,12 @@ func sseMessage(event, data string, id int) string {
 }
 
 type Api struct {
-	canvas    Canvas
-	ctx       context.Context
-	mux       *http.ServeMux
-	listeners []chan paintEvent
+	canvas       Canvas
+	tokenHandler *TokenHandler
+	apiSecretKey string
+	ctx          context.Context
+	mux          *http.ServeMux
+	listeners    []chan paintEvent
 }
 
 func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
@@ -38,16 +42,50 @@ func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
 	api.canvas = canvas
 	api.ctx = ctx
 
+	sessionSecret := os.Getenv("TOKEN_SALT")
+	if sessionSecret == "" {
+		log.Fatal("TOKEN_SALT not found")
+	}
+
+	api.tokenHandler = NewTokenHandler(sessionSecret)
+	api.apiSecretKey = os.Getenv("API_SECRET_KEY")
+	if api.apiSecretKey == "" {
+		log.Fatal("API_SECRET_KEY not found")
+	}
+
 	api.mux = http.NewServeMux()
 
-	api.mux.HandleFunc("/", api.HandleCanvas)
 	api.mux.HandleFunc("/sse", api.StreamUpdates)
+	api.mux.HandleFunc("/token", api.HandleToken)
+	api.mux.HandleFunc("/config", api.HandleConfig)
+	api.mux.HandleFunc("/", api.HandleCanvas)
 
 	return &api, nil
 }
 
 func (api *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/token" {
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			http.Error(w, "No authorization header", http.StatusForbidden)
+			return
+		}
+
+		parts := strings.SplitN(auth, " ", 2)
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			http.Error(w, "Invalid authorization header", http.StatusForbidden)
+			return
+		}
+
+		if err := api.tokenHandler.Verify(parts[1]); err != nil {
+			fmt.Println(err)
+			http.Error(w, "Token invalid!", http.StatusForbidden)
+			return
+		}
+	}
+
 	r = r.WithContext(api.ctx)
+
 	api.mux.ServeHTTP(w, r)
 }
 
@@ -82,31 +120,72 @@ func (api *Api) HandleCanvas(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
+			http.Error(w, "Unable to read request body", http.StatusBadRequest)
 			return
 		}
 
 		var event paintEvent
 
 		if err := json.Unmarshal(body, &event); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
+			message := fmt.Sprintf("Bad format: %v", err.Error())
+			http.Error(w, message, http.StatusBadRequest)
 			return
 		}
 
 		err = api.ApplyPaint(event)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
 	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		http.Error(w, "Expected GET or PATCH", http.StatusMethodNotAllowed)
 	}
+}
+
+type PublicConfig struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+func (api *Api) HandleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Only GET accepted", http.StatusMethodNotAllowed)
+		return
+	}
+
+	enc := json.NewEncoder(w)
+	enc.Encode(PublicConfig{
+		Width:  api.canvas.width,
+		Height: api.canvas.height,
+	})
+}
+
+func (api *Api) HandleToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Only GET accepted", http.StatusMethodNotAllowed)
+		return
+	}
+
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		http.Error(w, "Missing authorization header", http.StatusForbidden)
+		return
+	}
+
+	parts := strings.SplitN(auth, " ", 2)
+	if parts[0] != "Secret" || parts[1] != api.apiSecretKey {
+		http.Error(w, "Secret invalid", http.StatusForbidden)
+		return
+	}
+
+	token := api.tokenHandler.Generate()
+	fmt.Fprint(w, token)
 }
 
 func (api *Api) StreamUpdates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		http.Error(w, "Only GET accepted", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -119,6 +198,7 @@ func (api *Api) StreamUpdates(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		http.Error(w, "Failed to create flusher for response writer", http.StatusInternalServerError)
 		return
 	}
 
@@ -135,6 +215,7 @@ func (api *Api) StreamUpdates(w http.ResponseWriter, r *http.Request) {
 			data, err := json.Marshal(event)
 			if err != nil {
 				log.Printf("Failed to marshal event: %v\nError: %v\n", event, err)
+				continue
 			}
 
 			message := sseMessage("paint", string(data), 0)
