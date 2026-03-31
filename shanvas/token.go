@@ -69,31 +69,32 @@ func (t *TokenHandler) Generate() string {
 
 var ErrInvalidToken = errors.New("token is invalid")
 
-func (t *TokenHandler) Verify(token string) error {
+func (t *TokenHandler) Verify(token string) (string, error) {
 	data, err := t.decode([]byte(token))
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	parts := bytes.Split(data, []byte("."))
 	if len(parts) != 2 {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
 
+	uid := parts[0]
 	mac, err := t.decode(parts[1])
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	hash := sha256.New()
 	hash.Write(t.secret)
-	hash.Write(parts[0])
+	hash.Write(uid)
 
 	macExpected := hash.Sum(nil)
 
 	if !bytes.Equal(mac, macExpected) {
-		return ErrInvalidToken
+		return "", ErrInvalidToken
 	}
 
-	return nil
+	return string(uid), nil
 }

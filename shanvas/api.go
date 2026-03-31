@@ -11,19 +11,22 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 type paintEvent struct {
 	X     int `json:"x"`
 	Y     int `json:"y"`
 	Brush int `json:"brush"`
+
+	id uint64
 }
 
-func NewPaintEvent(x, y, brush int) paintEvent {
-	return paintEvent{X: x, Y: y, Brush: brush}
+func NewPaintEvent(x, y, brush int, id uint64) paintEvent {
+	return paintEvent{X: x, Y: y, Brush: brush, id: id}
 }
 
-func sseMessage(event, data string, id int) string {
+func sseMessage(event, data string, id uint64) string {
 	return fmt.Sprintf("event: %v\ndata: %v\nid: %v\n\n", event, data, id)
 }
 
@@ -33,7 +36,9 @@ type Api struct {
 	apiSecretKey string
 	ctx          context.Context
 	mux          *http.ServeMux
-	listeners    []chan paintEvent
+
+	eventId   atomic.Uint64
+	listeners map[string]chan paintEvent
 }
 
 func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
@@ -41,6 +46,7 @@ func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
 
 	api.canvas = canvas
 	api.ctx = ctx
+	api.listeners = make(map[string]chan paintEvent)
 
 	sessionSecret := os.Getenv("TOKEN_SALT")
 	if sessionSecret == "" {
@@ -56,7 +62,7 @@ func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
 	api.mux = http.NewServeMux()
 
 	api.mux.HandleFunc("/sse", api.StreamUpdates)
-	api.mux.HandleFunc("/token", api.HandleToken)
+	api.mux.HandleFunc("/authorize", api.HandleToken)
 	api.mux.HandleFunc("/config", api.HandleConfig)
 	api.mux.HandleFunc("/", api.HandleCanvas)
 
@@ -64,34 +70,32 @@ func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
 }
 
 func (api *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/token" {
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
-			http.Error(w, "No authorization header", http.StatusForbidden)
+	ctx := api.ctx
+
+	if r.URL.Path != "/authorize" {
+		token_cookie, err := r.Cookie("_shanvas_token")
+		if err != nil {
+			http.Error(w, "No required authorization", http.StatusForbidden)
 			return
 		}
 
-		parts := strings.SplitN(auth, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, "Invalid authorization header", http.StatusForbidden)
-			return
-		}
-
-		if err := api.tokenHandler.Verify(parts[1]); err != nil {
-			fmt.Println(err)
+		uid, err := api.tokenHandler.Verify(token_cookie.Value)
+		if err != nil {
 			http.Error(w, "Token invalid!", http.StatusForbidden)
 			return
 		}
+
+		ctx = context.WithValue(ctx, "uid", uid)
 	}
 
-	r = r.WithContext(api.ctx)
+	r = r.WithContext(ctx)
 
 	api.mux.ServeHTTP(w, r)
 }
 
 var ErrInvalidBrush = errors.New("invalid brush")
 
-func (api *Api) ApplyPaint(event paintEvent) error {
+func (api *Api) ApplyPaint(event paintEvent, uid string) error {
 	if event.Brush > 7 {
 		return ErrInvalidBrush
 	}
@@ -101,7 +105,12 @@ func (api *Api) ApplyPaint(event paintEvent) error {
 		return err
 	}
 
-	for _, listener := range api.listeners {
+	api.eventId.Add(1)
+
+	for lid, listener := range api.listeners {
+		if uid == lid {
+			continue
+		}
 		listener <- event
 	}
 
@@ -124,6 +133,12 @@ func (api *Api) HandleCanvas(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		uid, ok := r.Context().Value("uid").(string)
+		if !ok {
+			http.Error(w, "No UID for request", http.StatusExpectationFailed)
+			return
+		}
+
 		var event paintEvent
 
 		if err := json.Unmarshal(body, &event); err != nil {
@@ -132,7 +147,8 @@ func (api *Api) HandleCanvas(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		err = api.ApplyPaint(event)
+		event.id = api.eventId.Load()
+		err = api.ApplyPaint(event, uid)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -162,8 +178,8 @@ func (api *Api) HandleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *Api) HandleToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Only GET accepted", http.StatusMethodNotAllowed)
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST accepted", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -179,8 +195,11 @@ func (api *Api) HandleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := api.tokenHandler.Generate()
-	fmt.Fprint(w, token)
+	cookie := http.Cookie{
+		Name:  "_shanvas_token",
+		Value: api.tokenHandler.Generate(),
+	}
+	http.SetCookie(w, &cookie)
 }
 
 func (api *Api) StreamUpdates(w http.ResponseWriter, r *http.Request) {
@@ -189,12 +208,11 @@ func (api *Api) StreamUpdates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	header := w.Header()
-	header.Add("Content-Type", "text/event-stream")
-	header.Add("Cache-Control", "no-cache")
-
-	listener := make(chan paintEvent)
-	api.listeners = append(api.listeners, listener)
+	uid, ok := r.Context().Value("uid").(string)
+	if !ok {
+		http.Error(w, "No UID for request", http.StatusExpectationFailed)
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -202,12 +220,25 @@ func (api *Api) StreamUpdates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	header := w.Header()
+	header.Add("Content-Type", "text/event-stream")
+	header.Add("Cache-Control", "no-cache")
+
+	message := sseMessage("connect", "", 0)
+	fmt.Fprint(w, message)
+	flusher.Flush()
+
+	listener := make(chan paintEvent)
+	api.listeners[uid] = listener
+
 	for {
 		select {
 		case <-r.Context().Done():
 			message := sseMessage("cease", "", 0)
 			fmt.Fprint(w, message)
 			flusher.Flush()
+
+			delete(api.listeners, uid)
 
 			return
 
@@ -218,7 +249,7 @@ func (api *Api) StreamUpdates(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			message := sseMessage("paint", string(data), 0)
+			message := sseMessage("paint", string(data), event.id)
 			fmt.Fprint(w, message)
 			flusher.Flush()
 		}

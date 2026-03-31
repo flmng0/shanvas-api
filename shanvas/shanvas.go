@@ -60,7 +60,6 @@ func Run(config Config) {
 	}
 
 	addr := fmt.Sprintf("127.0.0.1:%v", config.Port)
-	fmt.Printf("Serving on %v\n", addr)
 
 	server := &http.Server{
 		Addr:    addr,
