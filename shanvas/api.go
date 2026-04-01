@@ -69,17 +69,32 @@ func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
 	return &api, nil
 }
 
+func getToken(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+
+	if token, found := strings.CutPrefix(authHeader, "Bearer "); found {
+		return token
+	}
+
+	tokenCookie, err := r.Cookie("_shanvas_token")
+	if err == nil {
+		return tokenCookie.Value
+	}
+
+	return ""
+}
+
 func (api *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := api.ctx
 
 	if r.URL.Path != "/authorize" {
-		token_cookie, err := r.Cookie("_shanvas_token")
-		if err != nil {
+		token := getToken(r)
+		if token == "" {
 			http.Error(w, "No required authorization", http.StatusForbidden)
 			return
 		}
 
-		uid, err := api.tokenHandler.Verify(token_cookie.Value)
+		uid, err := api.tokenHandler.Verify(token)
 		if err != nil {
 			http.Error(w, "Token invalid!", http.StatusForbidden)
 			return
