@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"time"
 )
 
 type TokenHandler struct {
 	secret  []byte
 	encoder *base32.Encoding
+	expiry  time.Duration
 }
 
 func NewTokenHandler(secret string) *TokenHandler {
@@ -20,6 +23,7 @@ func NewTokenHandler(secret string) *TokenHandler {
 
 	return &TokenHandler{
 		secret:  []byte(secret),
+		expiry:  time.Duration(30 * time.Minute),
 		encoder: encoder,
 	}
 }
@@ -56,18 +60,46 @@ func (t *TokenHandler) Generate() string {
 	rand := generateRandomKey(32)
 	id := t.encode(rand)
 
+	time, err := time.Now().MarshalText()
+	if err != nil {
+		log.Fatal(err)
+	}
+	time = t.encode(time)
+
 	hash := sha256.New()
 
 	hash.Write(t.secret)
+	hash.Write(time)
 	hash.Write(id)
 	mac := t.encode(hash.Sum(nil))
 
-	token := fmt.Appendf(nil, "%s.%s", id, mac)
+	token := fmt.Appendf(nil, "%s.%s.%s", id, time, mac)
 
 	return string(t.encode(token))
 }
 
+var ErrMalformedToken = errors.New("token is malformed (incorrect parts)")
 var ErrInvalidToken = errors.New("token is invalid")
+var ErrExpiredToken = errors.New("token is expired")
+
+func (t *TokenHandler) validateTime(timePart []byte) error {
+	decoded, err := t.decode(timePart)
+	if err != nil {
+		return err
+	}
+
+	var timeStamp time.Time
+	if err := timeStamp.UnmarshalText(decoded); err != nil {
+		return err
+	}
+
+	elapsed := time.Since(timeStamp)
+	if elapsed > t.expiry {
+		return ErrExpiredToken
+	}
+
+	return nil
+}
 
 func (t *TokenHandler) Verify(token string) (string, error) {
 	data, err := t.decode([]byte(token))
@@ -76,18 +108,26 @@ func (t *TokenHandler) Verify(token string) (string, error) {
 	}
 
 	parts := bytes.Split(data, []byte("."))
-	if len(parts) != 2 {
-		return "", ErrInvalidToken
+	if len(parts) != 3 {
+		return "", ErrMalformedToken
 	}
 
 	uid := parts[0]
-	mac, err := t.decode(parts[1])
+	timePart := parts[1]
+
+	err = t.validateTime(timePart)
+	if err != nil {
+		return "", err
+	}
+
+	mac, err := t.decode(parts[2])
 	if err != nil {
 		return "", err
 	}
 
 	hash := sha256.New()
 	hash.Write(t.secret)
+	hash.Write(timePart)
 	hash.Write(uid)
 
 	macExpected := hash.Sum(nil)

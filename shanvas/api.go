@@ -70,12 +70,18 @@ func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
 }
 
 func getToken(r *http.Request) string {
-	authHeader := r.Header.Get("Authorization")
+	// URL Query: "?token=TOKEN"
+	if token := r.URL.Query().Get("token"); token != "" {
+		return token
+	}
 
+	// Header: "Authorization: Bearer TOKEN"
+	authHeader := r.Header.Get("Authorization")
 	if token, found := strings.CutPrefix(authHeader, "Bearer "); found {
 		return token
 	}
 
+	// Cookie: "_shanvas_token=TOKEN"
 	tokenCookie, err := r.Cookie("_shanvas_token")
 	if err == nil {
 		return tokenCookie.Value
@@ -96,6 +102,7 @@ func (api *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		uid, err := api.tokenHandler.Verify(token)
 		if err != nil {
+			fmt.Printf("Token rejected: %v\n", err)
 			http.Error(w, "Token invalid!", http.StatusForbidden)
 			return
 		}
