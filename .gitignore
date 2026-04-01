@@ -1,3 +1,5 @@
 canvas.bin
 tmp/
 .env.local
+
+shanvas-api
