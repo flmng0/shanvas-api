@@ -13,8 +13,9 @@ import (
 )
 
 type Config struct {
-	StateFilePath string
-	Port          int
+	StateFilePath    string
+	Port             int
+	AutoSaveInterval string
 
 	CanvasWidth  int
 	CanvasHeight int
@@ -57,6 +58,12 @@ func autoSave(ctx context.Context, interval time.Duration, canvas *Canvas, path 
 }
 
 func Run(config Config) {
+	autoSaveInterval, err := time.ParseDuration(config.AutoSaveInterval)
+	if err != nil {
+		autoSaveInterval = 10 * time.Minute
+		log.Printf("Failed to parse AutoSaveInterval, using default (10 minutes): %v\n", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -87,7 +94,7 @@ func Run(config Config) {
 			log.Fatal(err)
 		}
 	}()
-	go autoSave(ctx, time.Second*10, &canvas, config.StateFilePath)
+	go autoSave(ctx, autoSaveInterval, &canvas, config.StateFilePath)
 
 	<-ctx.Done()
 

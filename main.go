@@ -18,8 +18,10 @@ func main() {
 	}
 
 	config := shanvas.Config{
-		CanvasWidth:   CanvasWidth,
-		CanvasHeight:  CanvasHeight,
+		CanvasWidth:      CanvasWidth,
+		CanvasHeight:     CanvasHeight,
+		AutoSaveInterval: "10m",
+
 		StateFilePath: StateFilePath,
 		Port:          port,
 	}
