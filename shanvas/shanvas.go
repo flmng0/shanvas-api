@@ -39,6 +39,23 @@ func saveState(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+func autoSave(ctx context.Context, interval time.Duration, canvas *Canvas, path string) {
+	timer := time.NewTimer(interval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Quit detected. Saving!")
+			saveState(path, canvas.Bytes())
+			return
+
+		case <-timer.C:
+			timer.Reset(interval)
+			saveState(path, canvas.Bytes())
+		}
+	}
+}
+
 func Run(config Config) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -70,6 +87,7 @@ func Run(config Config) {
 			log.Fatal(err)
 		}
 	}()
+	go autoSave(ctx, time.Second*10, &canvas, config.StateFilePath)
 
 	<-ctx.Done()
 

@@ -91,7 +91,7 @@ func getToken(r *http.Request) string {
 }
 
 func (api *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := api.ctx
+	ctx := r.Context()
 
 	if r.URL.Path != "/authorize" {
 		token := getToken(r)
@@ -258,15 +258,6 @@ func (api *Api) StreamUpdates(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case <-r.Context().Done():
-			message := sseMessage("cease", "", 0)
-			fmt.Fprint(w, message)
-			flusher.Flush()
-
-			delete(api.listeners, uid)
-
-			return
-
 		case event := <-listener:
 			data, err := json.Marshal(event)
 			if err != nil {
@@ -277,6 +268,18 @@ func (api *Api) StreamUpdates(w http.ResponseWriter, r *http.Request) {
 			message := sseMessage("paint", string(data), event.id)
 			fmt.Fprint(w, message)
 			flusher.Flush()
+
+		case <-r.Context().Done():
+			goto cleanup
+		case <-api.ctx.Done():
+			goto cleanup
 		}
 	}
+
+cleanup:
+	message = sseMessage("cease", "", api.eventId.Load())
+	fmt.Fprint(w, message)
+	flusher.Flush()
+
+	delete(api.listeners, uid)
 }
