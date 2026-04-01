@@ -193,10 +193,13 @@ func (api *Api) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	enc := json.NewEncoder(w)
-	enc.Encode(PublicConfig{
-		Width:  api.canvas.width,
-		Height: api.canvas.height,
-	})
+	config := PublicConfig{
+		Width:  api.canvas.Width,
+		Height: api.canvas.Height,
+	}
+	if err := enc.Encode(config); err != nil {
+		http.Error(w, "Failed to encode configuration", http.StatusInternalServerError)
+	}
 }
 
 func (api *Api) HandleToken(w http.ResponseWriter, r *http.Request) {

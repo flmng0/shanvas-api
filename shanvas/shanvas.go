@@ -13,11 +13,11 @@ import (
 )
 
 type Config struct {
-	Scale         int
-	AspectWidth   int
-	AspectHeight  int
 	StateFilePath string
 	Port          int
+
+	CanvasWidth  int
+	CanvasHeight int
 }
 
 func loadState(path string) ([]byte, error) {
@@ -43,15 +43,12 @@ func Run(config Config) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	canvasWidth := config.AspectWidth * config.Scale
-	canvasHeight := config.AspectHeight * config.Scale
-
 	data, err := loadState(config.StateFilePath)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	canvas := NewCanvas(data, canvasWidth, canvasHeight)
+	canvas := NewCanvas(data, config.CanvasWidth, config.CanvasHeight)
 	saveState(config.StateFilePath, canvas.Bytes())
 
 	api, err := NewApi(ctx, canvas)
@@ -67,6 +64,8 @@ func Run(config Config) {
 	}
 
 	go func() {
+		log.Printf("Server listening on: %v\n", server.Addr)
+
 		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}

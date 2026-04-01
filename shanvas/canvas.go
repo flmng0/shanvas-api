@@ -6,8 +6,8 @@ import (
 
 type Canvas struct {
 	buffer []byte
-	width  int
-	height int
+	Width  int
+	Height int
 }
 
 func NewCanvas(data []byte, width, height int) Canvas {
@@ -17,15 +17,15 @@ func NewCanvas(data []byte, width, height int) Canvas {
 
 	return Canvas{
 		buffer: data,
-		width:  width,
-		height: height,
+		Width:  width,
+		Height: height,
 	}
 }
 
 var ErrPaintOutOfBounds = errors.New("tried to paint out of bounds!")
 
 func (cvs Canvas) Paint(value byte, x, y int) error {
-	index := x + y*cvs.width
+	index := x + y*cvs.Width
 	if index > len(cvs.buffer) {
 		return ErrPaintOutOfBounds
 	}
