@@ -14,6 +14,13 @@ import (
 	"sync/atomic"
 )
 
+const PaletteCount = 16
+
+// BUBBLEGUM-16 from Lowspec
+//
+//	https://lospec.com/palette-list/bubblegum-16
+var Palette = [PaletteCount]string{"#fafdff", "#16171a", "#7f0622", "#d62411", "#ff8426", "#ffd100", "#ff80a4", "#ff2674", "#94216a", "#430067", "#234975", "#68aed4", "#bfff3c", "#10d275", "#007899", "#002859"}
+
 type paintEvent struct {
 	X     int `json:"x"`
 	Y     int `json:"y"`
@@ -118,7 +125,7 @@ func (api *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 var ErrInvalidBrush = errors.New("invalid brush")
 
 func (api *Api) ApplyPaint(event paintEvent, uid string) error {
-	if event.Brush > 7 {
+	if event.Brush > PaletteCount-1 || event.Brush < 0 {
 		return ErrInvalidBrush
 	}
 
@@ -184,6 +191,8 @@ func (api *Api) HandleCanvas(w http.ResponseWriter, r *http.Request) {
 type PublicConfig struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
+
+	Palette [PaletteCount]string `json:"palette"`
 }
 
 func (api *Api) HandleConfig(w http.ResponseWriter, r *http.Request) {
@@ -194,8 +203,9 @@ func (api *Api) HandleConfig(w http.ResponseWriter, r *http.Request) {
 
 	enc := json.NewEncoder(w)
 	config := PublicConfig{
-		Width:  api.canvas.Width,
-		Height: api.canvas.Height,
+		Width:   api.canvas.Width,
+		Height:  api.canvas.Height,
+		Palette: Palette,
 	}
 	if err := enc.Encode(config); err != nil {
 		http.Error(w, "Failed to encode configuration", http.StatusInternalServerError)
