@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
@@ -38,7 +39,7 @@ func sseMessage(event, data string, id uint64) string {
 }
 
 type Api struct {
-	canvas       Canvas
+	canvas       *Canvas
 	tokenHandler *TokenHandler
 	apiSecretKey string
 	ctx          context.Context
@@ -48,7 +49,7 @@ type Api struct {
 	listeners map[string]chan paintEvent
 }
 
-func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
+func NewApi(ctx context.Context, canvas *Canvas) (*Api, error) {
 	var api Api
 
 	api.canvas = canvas
@@ -71,6 +72,7 @@ func NewApi(ctx context.Context, canvas Canvas) (*Api, error) {
 	api.mux.HandleFunc("/sse", api.StreamUpdates)
 	api.mux.HandleFunc("/authorize", api.HandleToken)
 	api.mux.HandleFunc("/config", api.HandleConfig)
+	api.mux.HandleFunc("/image", api.HandleImage)
 	api.mux.HandleFunc("/", api.HandleCanvas)
 
 	return &api, nil
@@ -292,4 +294,22 @@ cleanup:
 	flusher.Flush()
 
 	delete(api.listeners, uid)
+}
+
+func (api *Api) HandleImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Only GET accepted", http.StatusMethodNotAllowed)
+		return
+	}
+
+	image, err := api.canvas.ToImage(Palette[:])
+	if err != nil {
+		http.Error(w, "Failed to generate image for canvas", http.StatusInternalServerError)
+		return
+	}
+
+	if err = png.Encode(w, image); err != nil {
+		http.Error(w, "Failed to encode image", http.StatusInternalServerError)
+		return
+	}
 }

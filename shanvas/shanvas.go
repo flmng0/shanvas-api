@@ -1,9 +1,11 @@
 package shanvas
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -37,21 +39,44 @@ func loadState(path string) ([]byte, error) {
 }
 
 func saveState(path string, data []byte) error {
-	return os.WriteFile(path, data, 0644)
+	if len(data) == 0 {
+		log.Println("Tried to save 0 bytes of data!")
+		return nil
+	}
+
+	file, err := os.OpenFile(path, os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	reader := bytes.NewReader(data)
+	n, err := io.Copy(file, reader)
+	if err != nil {
+		return err
+	}
+
+	if n != int64(len(data)) {
+		log.Printf("Failed to write all data. Wrote: %v\n", n)
+	}
+
+	return nil
 }
 
 func autoSave(ctx context.Context, interval time.Duration, canvas *Canvas, path string) {
-	timer := time.NewTimer(interval)
+	timer := time.NewTicker(interval)
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Quit detected. Saving!")
-			saveState(path, canvas.Bytes())
+			log.Println("Quit detected. Saving!")
+			if err := saveState(path, canvas.Bytes()); err != nil {
+				log.Fatal(err)
+			}
 			return
 
 		case <-timer.C:
-			timer.Reset(interval)
+			log.Println("Autosaving...")
 			saveState(path, canvas.Bytes())
 		}
 	}
@@ -71,9 +96,15 @@ func Run(config Config) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if data == nil {
+		log.Println("Warning! No initial data could be loaded!")
+	}
 
 	canvas := NewCanvas(data, config.CanvasWidth, config.CanvasHeight)
-	saveState(config.StateFilePath, canvas.Bytes())
+	err = saveState(config.StateFilePath, canvas.Bytes())
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	api, err := NewApi(ctx, canvas)
 	if err != nil {
@@ -94,7 +125,7 @@ func Run(config Config) {
 			log.Fatal(err)
 		}
 	}()
-	go autoSave(ctx, autoSaveInterval, &canvas, config.StateFilePath)
+	go autoSave(ctx, autoSaveInterval, canvas, config.StateFilePath)
 
 	<-ctx.Done()
 
